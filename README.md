@@ -1,67 +1,85 @@
 # LogKiller
 
-Android TV application that resolves the persistent log storage bug affecting millions of Android TV devices worldwide.
+Android TV utility application for adjusting persistent log buffer configuration on devices where `persist.logd.logpersistd.size` is set to values that may consume significant storage space.
 
-## Problem Description
+## Overview
 
-On millions of Android TV devices, the system property `persist.logd.logpersistd.size` defaults to 512 MB. This reserves 512 MB of internal storage for persistent system logs. On devices with 4-8 GB of storage, this allocation causes:
+This application provides a user interface for inspecting and modifying the Android logging system's persistent buffer size configuration. Some Android TV device manufacturers configure the persistent log buffer (`persist.logd.logpersistd.size`) with values up to 512 MB, which can consume storage space on devices with limited internal memory.
 
-- Insufficient storage errors during normal operation
-- Failed Over-The-Air (OTA) updates due to space constraints
-- Degraded system performance from storage pressure
+Google updated the AOSP default to 60 MB in November 2024, but devices that do not receive regular system updates will retain their original configuration. This tool allows users to manually adjust this setting without requiring custom ROMs or waiting for manufacturer updates.
 
-Google addressed this issue in AOSP (November 2024) by reducing the default value to 60 MB. However, most existing devices will never receive this update through official manufacturer channels due to discontinued support.
+## Important Notes
 
-## Technical Solution
+### Does Your Device Need This?
 
-LogKiller modifies the system properties at runtime to reduce the log buffer size from 512 MB to 60 MB, freeing approximately 452 MB of storage space. The application provides dual execution paths for both rooted and non-rooted devices.
+This tool is only relevant if:
+- Your device has `persist.logd.logpersistd.size` configured to a value larger than 60 MB
+- Persistent logging is enabled (the `persist.logd.logpersistd.buffer` property is set)
+- You are experiencing storage constraints on a device with limited internal memory
+
+Many Android TV devices have persistent logging disabled by default, or already use reasonable buffer sizes. The application will detect your current configuration and inform you if no action is needed.
+
+### Technical Limitations
+
+- **Root Required for Automatic Application**: The app can automatically apply changes only on rooted devices. Without root, it generates ADB commands that must be executed manually from a computer.
+  
+- **ADB Property Restrictions**: On many retail Android devices, the standard ADB shell user cannot modify `persist.*` properties due to security restrictions. Even with ADB access, you may encounter "permission denied" errors when attempting to set these properties. This is intentional Android security behavior, not an app bug.
+
+- **Property Persistence**: Some device manufacturers reset system properties during boot. Changes made by this tool may not persist across reboots on all devices. For permanent modifications on rooted devices, consider creating an init.d script or Magisk module.
+
+- **No Remote Operations**: This application performs all operations locally on the device. It does not contact remote servers, collect telemetry, or transmit any data.
 
 ## System Requirements
 
 - Android TV device running Android 7.0 (API 24) or higher
-- Root access OR ADB debugging enabled
-- Minimum 4 GB internal storage recommended
+- For automatic fix: Root access with su binary available
+- For manual fix: ADB debugging enabled and a computer with ADB tools
+- Note: ADB method may not work on all devices due to property permission restrictions
 
-## Installation Methods
+## Installation
 
-### Method 1: Build from Source
+### Build from Source
 
 1. Clone this repository
-2. Open the project in Android Studio Arctic Fox or later
-3. Sync Gradle files to download dependencies
-4. Build and install on your Android TV device via USB or network ADB
+2. Open in Android Studio Arctic Fox or later
+3. Sync Gradle dependencies
+4. Build and install via USB or network ADB
 
-### Method 2: Sideload Pre-built APK
+```bash
+./gradlew assembleDebug
+adb install app/build/outputs/apk/debug/app-debug.apk
+```
 
-1. Download the latest APK from the releases section
-2. Enable "Unknown Sources" in your Android TV security settings
-3. Install using a file manager application or via ADB:
+### Sideload Pre-built APK
+
+1. Download the latest APK from releases
+2. Enable "Unknown Sources" in Android TV security settings
+3. Install using a file manager or via ADB:
 
 ```bash
 adb install logkiller.apk
 ```
 
-## Usage Instructions
+## Usage
 
 ### With Root Access
 
 1. Launch LogKiller on your Android TV device
-2. The application will automatically detect root access availability
-3. Press "FIX NOW" to apply the system property changes
-4. The application will execute the following operations:
-   - Set `persist.logd.logpersistd.size` to 60
-   - Set `logd.logpersistd.size` to 60 (trampoline workaround for compatibility)
-   - Clear existing log files in `/data/misc/logd/`
-   - Clear RAM log buffers using `logcat -c`
-5. Reboot your device for changes to take full effect
+2. The app displays current log buffer size and folder usage
+3. Press "FIX NOW" to apply changes automatically
+4. The app executes:
+   - `setprop persist.logd.logpersistd.size 60`
+   - `setprop logd.logpersistd.size 60`
+   - `rm -rf /data/misc/logd/*` (clear existing logs)
+   - `logcat -c` (clear RAM buffers)
+5. Reboot recommended for full effect
 
-### Without Root Access (ADB Method)
+### Without Root (ADB Method)
 
 1. Launch LogKiller on your Android TV device
-2. Press "FIX NOW" button
-3. The application will display the required ADB commands
-4. Press "COPY ADB COMMANDS" to copy them to the clipboard
-5. On your development computer, connect to the device and execute:
+2. Press "FIX NOW"
+3. Press "COPY ADB COMMANDS" to copy commands to clipboard
+4. On your computer, connect to device and execute:
 
 ```bash
 adb shell setprop persist.logd.logpersistd.size 60
@@ -70,81 +88,83 @@ adb shell rm -rf /data/misc/logd/*
 adb shell logcat -c
 ```
 
-6. Reboot your device to ensure changes persist
+5. Reboot your device
 
-## Application Features
+**Note**: If you receive "permission denied" errors, your device does not allow ADB to modify persist properties. This is expected behavior on many retail devices. Root access would be required for automatic application.
 
-- Automatic detection of current log buffer size via reflection and shell fallbacks
-- Real-time storage analysis using StatFs
-- Dual execution path support (root and ADB methods)
-- One-click fix application for rooted devices
-- Copy-pasteable ADB command generation for non-rooted devices
-- Restore defaults functionality to revert changes
-- D-pad navigation optimized for Android TV remote controls
+## Features
+
+- Reads current log buffer configuration via reflection with shell fallbacks
+- Displays actual disk usage of `/data/misc/logd/` directory
+- Shows available and total storage information
+- Dual execution paths (root automatic, ADB manual commands)
+- Copy-pasteable ADB command generation
+- Restore defaults functionality (512 MB)
+- State persistence across app restarts
+- D-pad navigation optimized for Android TV remotes
 - Landscape orientation locked for TV compatibility
-- State persistence across application restarts and reboots
-- Comprehensive error handling with user-friendly status messages
+- Comprehensive error handling with sanitized messages
 
-## Technical Implementation Details
+## Technical Details
 
-### System Properties Modified
+### Properties Modified
 
-| Property | Default Value | Fixed Value |
-|----------|---------------|-------------|
-| persist.logd.logpersistd.size | 512 | 60 |
-| logd.logpersistd.size | 512 | 60 |
+| Property | Typical Default | Target Value |
+|----------|----------------|--------------|
+| persist.logd.logpersistd.size | Varies by device (often 256-512) | 60 |
+| logd.logpersistd.size | Varies by device | 60 |
 
-### Storage Impact Analysis
+### Storage Impact
 
-- Before fix: 512 MB reserved for persistent logs
-- After fix: 60 MB reserved for persistent logs
-- Typical storage savings: Approximately 452 MB
+- Before: Configured buffer size (varies, commonly 256-512 MB)
+- After: 60 MB
+- Actual savings depend on how much log data has accumulated
 
-### Files and Directories Affected
+### Directories Affected
 
-- `/data/misc/logd/` - System log directory (contents cleared during fix application)
+- `/data/misc/logd/` - System log storage directory (contents optionally cleared)
 
-### Permission Requirements
+### Permissions
 
-The application requests the following permissions:
+The app requests these permissions:
 
-- `READ_LOGS` - To read system log properties (system-level permission, may require manual grant)
-- `WRITE_EXTERNAL_STORAGE` - For storage space calculation
-- `READ_EXTERNAL_STORAGE` - For storage space calculation
-- `INTERNET` - Reserved for future update verification features
+- `READ_LOGS` - System-level permission for log access (may require manual grant via ADB)
+- `WRITE_EXTERNAL_STORAGE` - Storage analysis
+- `READ_EXTERNAL_STORAGE` - Storage analysis
+- `INTERNET` - Not currently used; reserved for future offline update verification
 
-Note: The READ_LOGS permission is a system-level permission that may not be granted on all devices. The application includes fallback mechanisms using shell commands when this permission is unavailable.
+Note: `READ_LOGS` is a signature-level permission on modern Android versions. If not granted, the app falls back to shell commands for property reading.
 
-## Troubleshooting Guide
+## Troubleshooting
 
-### Application displays "Logging is off. Nothing to fix."
+### "Logging is off. Nothing to fix."
 
-This indicates that persistent logging is already disabled on your device via the `persist.logd.logpersistd.buffer` property. No action is required.
+Your device has persistent logging disabled via `persist.logd.logpersistd.buffer`. No action needed.
 
-### Application displays "Device is already optimized"
+### "Device is already optimized"
 
-Your device already has a log limit of 60 MB or lower. This may indicate a previous fix application or manufacturer configuration. No action is required.
+Your current log limit is 60 MB or lower. No action needed.
 
-### Root command execution fails
+### ADB commands fail with "permission denied"
 
-If root commands fail with an error, use the ADB method instead. Connect your device to a computer with ADB installed and execute the provided commands manually.
+Your device restricts ADB from modifying persist properties. This is normal security behavior on retail devices. Root access is required for automatic modification, or you may need to use a custom recovery or engineering bootloader.
 
-### Fix does not persist after device reboot
+### Fix doesn't persist after reboot
 
-Some device manufacturers may reset system properties during boot. If the fix does not persist:
+Some manufacturers reset properties at boot. Solutions:
+- Re-run the fix after each reboot
+- Create an init.d script (rooted devices)
+- Use a Magisk module for persistent changes
 
-1. Re-run the fix after each reboot
-2. Consider creating a custom init.d script for automatic application at boot
-3. Use a Magisk module for persistent modifications on rooted devices
+### App shows error reading properties
 
-### Insufficient permissions error
-
-If you encounter permission errors, manually grant the required permissions via ADB:
+Try granting permissions manually:
 
 ```bash
 adb shell pm grant com.logkiller android.permission.READ_LOGS
-adb shell pm grant com.logkiller android.permission.WRITE_EXTERNAL_STORAGE
 ```
+
+If this fails, the permission is restricted on your device. The app will use shell command fallbacks.
 
 ## Build Instructions
 
@@ -153,23 +173,19 @@ adb shell pm grant com.logkiller android.permission.WRITE_EXTERNAL_STORAGE
 - Android Studio Arctic Fox (2020.3.1) or later
 - JDK 11 or later
 - Android SDK Platform 33
-- Android SDK Build-Tools 33.0.0 or later
+- Android SDK Build-Tools 33.0.0+
 
-### Build Process
-
-Execute the following command from the project root directory:
+### Build Commands
 
 ```bash
+# Debug build
 ./gradlew assembleDebug
-```
 
-For a release build:
-
-```bash
+# Release build
 ./gradlew assembleRelease
 ```
 
-The generated APK files will be located at:
+Output locations:
 - Debug: `app/build/outputs/apk/debug/app-debug.apk`
 - Release: `app/build/outputs/apk/release/app-release-unsigned.apk`
 
@@ -193,17 +209,23 @@ LogKiller/
 └── README.md
 ```
 
-## License
+## Security Considerations
 
-This project is provided as-is for educational and troubleshooting purposes. Use at your own risk.
+This application:
+- Executes only predefined shell commands
+- Does not accept user input for command construction
+- Sanitizes all error messages before display
+- Does not transmit data externally
+- Requires explicit user action to modify system properties
+- Provides clear warnings about ADB limitations
 
 ## Disclaimer
 
-Modifying system properties can potentially affect system stability and behavior. While this fix has been tested on multiple Android TV devices, results may vary depending on device manufacturer, Android version, and custom ROM implementations.
+Modifying system properties can affect device behavior and stability. While this tool uses standard Android commands and has been tested on multiple devices, results vary by manufacturer, Android version, and device configuration.
 
-The authors and contributors are not responsible for any damage, data loss, or system instability resulting from the use of this application. Users assume all risks associated with system modifications.
+The authors provide this software as-is without warranty. Users assume all risks associated with system modifications. Backup important data before making changes.
 
-It is strongly recommended to backup important data before making any system-level changes.
+This tool is intended for troubleshooting and educational purposes. Use responsibly and only on devices you own or have authorization to modify.
 
 ## Version History
 
@@ -213,4 +235,6 @@ It is strongly recommended to backup important data before making any system-lev
 - Root and ADB execution paths
 - Storage analysis and reporting
 - State persistence
-- TV-optimized user interface
+- TV-optimized interface
+- Comprehensive error handling
+- Message sanitization for security

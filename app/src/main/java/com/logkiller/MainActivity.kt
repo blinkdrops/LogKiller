@@ -28,6 +28,17 @@ import java.io.InputStreamReader
 import java.lang.reflect.Method
 import java.util.concurrent.TimeUnit
 
+/**
+ * LogKiller - Android TV utility to reduce persistent log buffer size.
+ * 
+ * This application addresses devices where persist.logd.logpersistd.size is configured
+ * with values larger than necessary (commonly 512 MB), which can consume significant
+ * storage on devices with limited internal memory.
+ * 
+ * IMPORTANT: This tool only modifies system properties if the device has root access
+ * or if the user manually executes ADB commands. The app itself cannot bypass Android
+ * security restrictions without proper authorization.
+ */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var card1Value: TextView
@@ -45,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
 
     companion object {
+        // Common log buffer sizes found in Android devices
         private const val DEFAULT_LOG_SIZE = 512
         private const val TARGET_LOG_SIZE = 60
         private const val PREFS_NAME = "logkiller_prefs"
@@ -53,7 +65,11 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_NEW_SIZE = "new_size"
         private const val KEY_TIMESTAMP = "timestamp"
         
-        private val VALID_LOG_SIZES = setOf(16, 32, 60, 128, 256, 512, 1024, 4096)
+        // Valid log sizes per Android documentation
+        private val VALID_LOG_SIZES = setOf(4, 8, 16, 32, 64, 128, 256, 512, 1024, 4096)
+        
+        // Command timeout in seconds
+        private const val COMMAND_TIMEOUT_SECONDS = 30L
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -127,15 +143,39 @@ class MainActivity : AppCompatActivity() {
                     checkAlreadyFixed(currentLogSize)
                     checkPersistentLoggingDisabled()
 
-                    updateStatus("Analysis complete. Current limit: ${currentLogSize} MB")
+                    val savings = calculatePotentialSavings(currentLogSize)
+                    if (savings > 0) {
+                        updateStatus("Analysis complete. Current: ${currentLogSize} MB. Potential savings: ~${savings} MB")
+                    } else {
+                        updateStatus("Analysis complete. Current limit: ${currentLogSize} MB")
+                    }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    updateStatus("Error reading properties: ${e.message}\nTap RETRY to attempt again.")
+                    updateStatus("Error reading properties: ${sanitizeMessage(e.message)}\nTap RETRY to attempt again.")
                     retryButton.visibility = View.VISIBLE
                 }
             }
         }
+    }
+
+    /**
+     * Sanitizes error messages to prevent information leakage.
+     * Only allows safe characters and limits length.
+     */
+    private fun sanitizeMessage(message: String?): String {
+        if (message.isNullOrEmpty()) return "Unknown error"
+        // Remove potentially dangerous characters and limit length
+        val sanitized = message.replace(Regex("[^a-zA-Z0-9 .,!?\\-_]"), "")
+        return if (sanitized.length > 200) sanitized.take(197) + "..." else sanitized
+    }
+
+    /**
+     * Calculates potential storage savings if fix is applied.
+     * Returns the difference between current size and target size.
+     */
+    private fun calculatePotentialSavings(currentSize: Int): Long {
+        return if (currentSize > TARGET_LOG_SIZE) (currentSize - TARGET_LOG_SIZE).toLong() else 0L
     }
 
     @SuppressLint("PrivateApi")
@@ -149,20 +189,32 @@ class MainActivity : AppCompatActivity() {
             
             val persistSizeStr = getMethod.invoke(null, "persist.logd.logpersistd.size", "") as? String
             if (!persistSizeStr.isNullOrEmpty()) {
-                size = persistSizeStr.toIntOrNull() ?: DEFAULT_LOG_SIZE
+                val parsedSize = persistSizeStr.toIntOrNull()
+                if (parsedSize != null && parsedSize in VALID_LOG_SIZES) {
+                    size = parsedSize
+                }
             } else {
                 // Fallback to logd.logpersistd.size
                 val sizeStr = getMethod.invoke(null, "logd.logpersistd.size", "") as? String
                 if (!sizeStr.isNullOrEmpty()) {
-                    size = sizeStr.toIntOrNull() ?: DEFAULT_LOG_SIZE
+                    val parsedSize = sizeStr.toIntOrNull()
+                    if (parsedSize != null && parsedSize in VALID_LOG_SIZES) {
+                        size = parsedSize
+                    }
                 }
             }
         } catch (e: ClassNotFoundException) {
             // Reflection failed, fallback to Runtime.exec
             size = getPropViaRuntime("persist.logd.logpersistd.size")
-            if (size == DEFAULT_LOG_SIZE) {
+            if (size == DEFAULT_LOG_SIZE || size !in VALID_LOG_SIZES) {
                 size = getPropViaRuntime("logd.logpersistd.size")
             }
+        } catch (e: NoSuchMethodException) {
+            // Method not found, use default
+            size = DEFAULT_LOG_SIZE
+        } catch (e: SecurityException) {
+            // Permission denied, use default
+            size = DEFAULT_LOG_SIZE
         } catch (e: Exception) {
             // Any other exception, use default
             size = DEFAULT_LOG_SIZE
@@ -171,25 +223,45 @@ class MainActivity : AppCompatActivity() {
         return size
     }
 
+    /**
+     * Executes getprop command via Runtime.exec with proper resource cleanup.
+     * Returns parsed integer value or DEFAULT_LOG_SIZE on failure.
+     */
     private fun getPropViaRuntime(propName: String): Int {
+        var process: Process? = null
+        var reader: BufferedReader? = null
         return try {
-            val process = Runtime.getRuntime().exec("getprop $propName")
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            val value = reader.readLine()?.trim()?.toIntOrNull() ?: DEFAULT_LOG_SIZE
-            reader.close()
-            process.waitFor()
+            process = Runtime.getRuntime().exec("getprop $propName")
+            // Set timeout to prevent hanging
+            if (!process.waitFor(COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroy()
+                return DEFAULT_LOG_SIZE
+            }
+            reader = BufferedReader(InputStreamReader(process.inputStream))
+            val line = reader.readLine()
+            val value = line?.trim()?.toIntOrNull() ?: DEFAULT_LOG_SIZE
             value
         } catch (e: Exception) {
             DEFAULT_LOG_SIZE
+        } finally {
+            try { reader?.close() } catch (_: Exception) {}
+            process?.destroy()
         }
     }
 
+    /**
+     * Checks if persistent logging is enabled by reading the buffer property.
+     * Returns true if the property exists and is non-empty, false otherwise.
+     */
     private fun isPersistentLoggingEnabled(): Boolean {
         return try {
             val systemPropertiesClass = Class.forName("android.os.SystemProperties")
             val getMethod: Method = systemPropertiesClass.getMethod("get", String::class.java, String::class.java)
             val bufferValue = getMethod.invoke(null, "persist.logd.logpersistd.buffer", "") as? String
             !bufferValue.isNullOrEmpty()
+        } catch (e: ClassNotFoundException) {
+            // Cannot determine, assume enabled to be safe
+            true
         } catch (e: Exception) {
             // If we can't read the property, assume it might be enabled
             true
@@ -312,30 +384,47 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Checks for root access by looking for su binary in common locations
+     * and attempting to execute it. Returns true only if su is found and executable.
+     */
     private fun checkRootAccess(): Boolean {
+        var process: Process? = null
+        var reader: BufferedReader? = null
         return try {
-            // Check for su binary in common locations
+            // Check for su binary in common locations with execute permission
             val suPaths = listOf("/system/bin/su", "/system/xbin/su", "/sbin/su")
             for (path in suPaths) {
-                if (File(path).exists()) {
+                val suFile = File(path)
+                if (suFile.exists() && suFile.canExecute()) {
                     return true
                 }
             }
             
-            // Try executing which su
-            val process = Runtime.getRuntime().exec("which su")
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
+            // Try executing which su as fallback
+            process = Runtime.getRuntime().exec("which su")
+            if (!process.waitFor(COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroy()
+                return false
+            }
+            reader = BufferedReader(InputStreamReader(process.inputStream))
             val result = reader.readLine()
-            reader.close()
-            process.waitFor()
-            
             !result.isNullOrEmpty()
         } catch (e: Exception) {
             false
+        } finally {
+            try { reader?.close() } catch (_: Exception) {}
+            process?.destroy()
         }
     }
 
+    /**
+     * Applies the log size fix using root privileges.
+     * Executes setprop commands via su and verifies the changes.
+     * Returns true if all commands succeed and verification passes.
+     */
     private fun applyRootFix(): Boolean {
+        var process: Process? = null
         return try {
             val commands = listOf(
                 "setprop persist.logd.logpersistd.size $TARGET_LOG_SIZE",
@@ -346,26 +435,40 @@ class MainActivity : AppCompatActivity() {
 
             var allSuccess = true
             for (cmd in commands) {
-                val process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-                process.waitFor()
-                if (process.exitValue() != 0) {
-                    allSuccess = false
-                    val errorStream = BufferedReader(InputStreamReader(process.errorStream)).readText()
-                    updateStatus("Command failed: $cmd\nError: $errorStream")
+                process = null
+                try {
+                    process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+                    if (!process.waitFor(COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                        process.destroy()
+                        allSuccess = false
+                        updateStatus("Command timeout: $cmd")
+                        continue
+                    }
+                    if (process.exitValue() != 0) {
+                        allSuccess = false
+                        val errorReader = BufferedReader(InputStreamReader(process.errorStream))
+                        val errorText = errorReader.use { it.readText() }
+                        val safeError = sanitizeMessage(errorText)
+                        updateStatus("Command failed: $cmd\nError: $safeError")
+                    }
+                } finally {
+                    process?.destroy()
                 }
             }
 
-            // Wait and verify
+            // Wait for property change to propagate
             Thread.sleep(2000)
-            val newSize = getCurrentLogLimit()
             
+            // Verify the change was applied
+            val newSize = getCurrentLogLimit()
             if (newSize > TARGET_LOG_SIZE) {
                 allSuccess = false
+                updateStatus("Verification failed: Log size is still ${newSize} MB")
             }
 
             allSuccess
         } catch (e: Exception) {
-            updateStatus("Root fix error: ${e.message}")
+            updateStatus("Root fix error: ${sanitizeMessage(e.message)}")
             false
         }
     }
@@ -400,7 +503,12 @@ adb shell logcat -c
         updateStatus("ADB commands copied to clipboard!\nPaste them into your terminal and execute.\nThen reboot your device.")
     }
 
+    /**
+     * Restores the default log size (512 MB).
+     * Uses root if available, otherwise provides ADB commands for manual execution.
+     */
     private fun restoreDefaults() {
+        var process: Process? = null
         scope.launch {
             updateStatus("Restoring default log size (512 MB)...")
             
@@ -415,10 +523,19 @@ adb shell logcat -c
 
                     var allSuccess = true
                     for (cmd in commands) {
-                        val process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
-                        process.waitFor()
-                        if (process.exitValue() != 0) {
-                            allSuccess = false
+                        process = null
+                        try {
+                            process = Runtime.getRuntime().exec(arrayOf("su", "-c", cmd))
+                            if (!process.waitFor(COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                                process.destroy()
+                                allSuccess = false
+                                continue
+                            }
+                            if (process.exitValue() != 0) {
+                                allSuccess = false
+                            }
+                        } finally {
+                            process?.destroy()
                         }
                     }
                     allSuccess
@@ -438,6 +555,7 @@ adb shell logcat -c
                 }
             } else {
                 val adbRestoreCommands = """# Restore Default Log Size (512 MB)
+# Note: This may not work on all devices as persist properties are often protected
 adb shell setprop persist.logd.logpersistd.size $DEFAULT_LOG_SIZE
 adb shell setprop logd.logpersistd.size $DEFAULT_LOG_SIZE
 """.trimIndent()
@@ -446,7 +564,7 @@ adb shell setprop logd.logpersistd.size $DEFAULT_LOG_SIZE
                 val clip = ClipData.newPlainText("ADB Restore Commands", adbRestoreCommands)
                 clipboard.setPrimaryClip(clip)
 
-                updateStatus("No root. ADB restore commands copied to clipboard:\n$adbRestoreCommands")
+                updateStatus("No root. ADB restore commands copied to clipboard.\nNote: Setting persist properties via ADB may require special permissions on some devices.")
             }
         }
     }
