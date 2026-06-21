@@ -17,11 +17,16 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import kotlinx.coroutines.*
-import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.lang.reflect.Method
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
@@ -47,6 +52,8 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_ORIGINAL_SIZE = "original_size"
         private const val KEY_NEW_SIZE = "new_size"
         private const val KEY_TIMESTAMP = "timestamp"
+        
+        private val VALID_LOG_SIZES = setOf(16, 32, 60, 128, 256, 512, 1024, 4096)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
