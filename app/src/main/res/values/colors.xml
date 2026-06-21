@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/background_dark</item>
+        <item name="android:colorAccent">@color/accent_cyan</item>
+        <item name="android:textColorPrimary">@android:color/white</item>
+        <item name="android:textColorSecondary">@android:color/darker_gray</item>
+    </style>
+
+    <color name="background_dark">#0D1117</color>
+    <color name="accent_cyan">#00D4FF</color>
+    <color name="card_background">#161B22</color>
+    <color name="status_red">#FF4444</color>
+    <color name="status_green">#44FF44</color>
+    <color name="status_yellow">#FFFF44</color>
+    <color name="button_disabled">#404040</color>
+</resources>
